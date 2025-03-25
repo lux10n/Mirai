@@ -1,0 +1,59 @@
+# Name of this GitHub Actions workflow.
+name: Semgrep CE scan
+
+on:
+  pull_request: {}
+  workflow_dispatch: {}
+  push:
+    branches: ["master", "main"]
+  schedule:
+    - cron: '20 17 * * *' # Runs every day at 17:20 UTC.
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: semgrep-oss/scan
+    runs-on: ubuntu-latest
+
+    container:
+      image: semgrep/semgrep
+
+    if: (github.actor != 'dependabot[bot]')
+
+    steps:
+      - name: Get scan metadata
+        run: |
+          echo "SCAN_TAGNAME=${{ github.event.repository.name }}-$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_ENV
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Run scan
+        run: semgrep scan --config auto --json-output ${{ env.SCAN_TAGNAME }}.json
+
+      - name : Parse JSON Report
+        run: | 
+          git clone https://github.com/lux10n/semgrep2html.git
+          python -m venv env
+          source env/bin/activate
+          python -m ensurepip --default-pip
+          pip install -r semgrep2html/requirements.txt
+          python semgrep2html/parse-semgrep.py --input ${{ env.SCAN_TAGNAME }}.json --output ${{ env.SCAN_TAGNAME }}.html --project-name ${{ github.event.repository.name }}
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-html-report-${{ env.SCAN_TAGNAME }}.html
+          path: ${{ env.SCAN_TAGNAME }}.html
+
+      - name: Fail if blocking issues exist
+        run: |
+          BLOCKING_ISSUES=$(jq '[.results[] | select(.severity == "ERROR")] | length' ${{ env.SCAN_TAGNAME }}.json)
+          if [ "$BLOCKING_ISSUES" -gt 0 ]; then
+            echo "❌ Blocking issues detected! Failing the pipeline."
+            exit 1
+          else
+            echo "✅ No blocking issues found. Closing..."
+          fi
